@@ -1054,6 +1054,7 @@ function openAssetForm(asset){
   const fSett = inp({value:a.settore, placeholder:'es. Banche, Tecnologia…'});
   const fArea = inp({value:a.area, placeholder:'es. Italia, USA, Globale…'});
   const fBanca = inp({value:a.banca, placeholder:'es. Sella, UBS…'});
+  const fTick = inp({value:a.ticker, placeholder:'es. ENEL.MI, AAPL, VWCE.DE'});
   const fPrezzo = inp({value:a.prezzo??'', num:true}), fPrezzoData = inp({value:a.prezzoData, type:'date'});
   const fCed = inp({value:a.cedola??'', num:true}), fScad = inp({value:a.scadenza??'', type:'date'});
   const fWl = h('input',{type:'checkbox'}); fWl.checked = !!a.wl;
@@ -1080,6 +1081,7 @@ function openAssetForm(asset){
     fld('ISIN', fIsin), fld('Tipo', fTipo),
     fld('Valuta', fVal), fld('Settore / categoria', fSett),
     fld('Area geografica', fArea), fld('Banca / dossier', fBanca),
+    fld('Ticker Yahoo', fTick, 'facoltativo — abilita le quotazioni automatiche'),
     fld('Regime fiscale plusvalenze', fFisc),
     bondBox, wlRow,
     h('label',{class:'fld'}, prezzoLab, fPrezzo), fld('Data prezzo', fPrezzoData),
@@ -1097,7 +1099,7 @@ function openAssetForm(asset){
     {label: isNew?'Aggiungi':'Salva', kind:'primary', onClick:(c)=>{
       if(!fNome.value.trim()){ fNome.focus(); return false; }
       const obj = {
-        id: a.id||uid(), nome:fNome.value.trim(), isin:fIsin.value.trim().toUpperCase(), ticker:a.ticker||'',
+        id: a.id||uid(), nome:fNome.value.trim(), isin:fIsin.value.trim().toUpperCase(), ticker:fTick.value.trim().toUpperCase(),
         tipo:fTipo.value, valuta:fVal.value, settore:fSett.value.trim(), area:fArea.value.trim(), banca:fBanca.value.trim(),
         wl:fWl.checked, fiscale:fFisc.value, cedola:readNum(fCed), scadenza:fScad.value||null,
         prezzo:readNum(fPrezzo)||0, prezzoData:fPrezzoData.value||todayISO(), note:fNote.value.trim(),
@@ -1192,15 +1194,66 @@ function openIncomeForm(inc){
 }
 
 /* ================= Aggiorna prezzi ================= */
+/* Quotazioni via endpoint pubblico Yahoo Finance (non ufficiale): nessuna chiave, CORS aperto. */
+async function yahooQuote(sym){
+  const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(sym)+'?interval=1d&range=1d');
+  if(!res.ok) throw new Error('HTTP '+res.status);
+  const m = (await res.json())?.chart?.result?.[0]?.meta;
+  if(!m || m.regularMarketPrice==null) throw new Error('quotazione assente');
+  return m;   // {regularMarketPrice, currency}
+}
+function makeQuoteFetcher(){
+  const fx = {};   // tassi EUR→CCY
+  async function eurRate(ccy){
+    if(!(ccy in fx)) fx[ccy] = (await yahooQuote('EUR'+ccy+'=X')).regularMarketPrice;
+    if(!fx[ccy]) throw new Error('cambio '+ccy+' non disponibile');
+    return fx[ccy];
+  }
+  return async function fetchInCcy(sym, targetCcy){
+    const m = await yahooQuote(sym);
+    let px = m.regularMarketPrice, ccy = m.currency||'EUR';
+    if(ccy==='GBp'||ccy==='GBX'){ px = px/100; ccy = 'GBP'; }
+    if(ccy === targetCcy) return px;
+    const pxEur = ccy==='EUR' ? px : px/await eurRate(ccy);
+    return targetCcy==='EUR' ? pxEur : pxEur*await eurRate(targetCcy);
+  };
+}
 function openPriceForm(){
   const open = BOOK.aperte;
   if(!open.length){ toast('Nessuna posizione aperta'); return; }
   const fData = inp({type:'date', value:todayISO()});
   const rows = open.map(p=>({p, f:inp({num:true, value:p.asset.prezzo??''})}));
+  const withTicker = rows.filter(r=>r.p.asset.ticker);
+  const qStatus = h('span',{class:'hint',style:'margin:0'});
+  async function autoQuotes(btn){
+    if(!withTicker.length){ qStatus.textContent='Nessun titolo ha un ticker: aggiungilo da Posizioni → Modifica.'; return; }
+    btn.disabled = true;
+    const fetchInCcy = makeQuoteFetcher();
+    const ko = [];
+    for(let i=0;i<withTicker.length;i++){
+      const r = withTicker[i];
+      qStatus.textContent = `Scarico ${i+1}/${withTicker.length} — ${r.p.asset.ticker}…`;
+      try{
+        const px = await fetchInCcy(r.p.asset.ticker, r.p.asset.valuta||'EUR');
+        r.f.value = fmtNum(px, 6);
+        r.f.style.outline = '2px solid var(--good)'; r.f.style.outlineOffset = '-1px';
+      }catch(e){ ko.push(r.p.asset.ticker); r.f.style.outline='2px solid var(--serious)'; r.f.style.outlineOffset='-1px'; }
+      await new Promise(s=>setTimeout(s, 180));
+    }
+    qStatus.textContent = `Scaricate ${withTicker.length-ko.length} quotazioni su ${withTicker.length}`
+      + (ko.length ? ` — non trovate: ${ko.slice(0,5).join(', ')}${ko.length>5?'…':''}` : '')
+      + '. Controlla i valori e premi Salva prezzi.';
+    btn.disabled = false;
+  }
   openModal({title:'Aggiorna prezzi di mercato', wide:true,
     sub:'Inserisci le ultime quotazioni: lo storico del portafoglio si aggiorna automaticamente.',
     body:h('div',{},
-      h('div',{style:'max-width:220px'}, fld('Data delle quotazioni', fData)),
+      h('div',{style:'display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:4px'},
+        h('div',{style:'max-width:220px;flex:none'}, fld('Data delle quotazioni', fData)),
+        h('div',{style:'flex:1;min-width:220px;padding-bottom:11px'},
+          h('button',{class:'btn sm', onclick:e=>autoQuotes(e.currentTarget)},
+            'Scarica quotazioni automatiche ('+withTicker.length+')'),
+          h('div',{}, qStatus))),
       h('div',{class:'tbl-wrap'}, h('table',{class:'tbl'},
         h('thead',{},h('tr',{},h('th',{},'Titolo'),h('th',{class:'num'},'Prezzo attuale'),h('th',{class:'num',style:'width:150px'},'Nuovo prezzo'))),
         h('tbody',{}, rows.map(r=>h('tr',{},
@@ -1504,6 +1557,12 @@ const IMP_FIELDS = {
     ['lordo','Importo lordo', /lordo|gross/i],
     ['netto','Importo netto', /netto|net|accredit|importo/i],
   ],
+  prezzi: [
+    ['titolo','Titolo (ISIN o nome) *', /isin|nome|descri|titolo|strumento/i],
+    ['prezzo','Prezzo unitario (se presente)', /prezzo|price|quotaz|corso|ultimo/i],
+    ['ctv','Controvalore', /controval|ctv|valore|market value/i],
+    ['qta','Quantità / nominale', /quantit|q\.t|nominale|qty|pezzi/i],
+  ],
 };
 function guessTipo(s){
   s = (s||'').toLowerCase();
@@ -1523,7 +1582,8 @@ function findAsset(key){
       || state.assets.find(a=>a.nome.toLowerCase().includes(key)||key.includes(a.nome.toLowerCase()));
 }
 function importWizardCard(){
-  const fType = sel([['posizioni','Posizioni (dossier attuale)'],['movimenti','Movimenti (compra/vendita)'],['proventi','Proventi (dividendi e cedole)']], 'posizioni');
+  const fType = sel([['posizioni','Posizioni (dossier attuale)'],['prezzi','Solo aggiornamento prezzi'],['movimenti','Movimenti (compra/vendita)'],['proventi','Proventi (dividendi e cedole)']], 'posizioni');
+  const fDataP = inp({type:'date', value:todayISO()});
   const fFile = h('input',{type:'file', accept:'.csv,.txt,.tsv', style:'display:none'});
   const fTxt = h('textarea',{class:'in', placeholder:'…oppure incolla qui il contenuto CSV (con intestazioni)', style:'min-height:90px'});
   const drop = h('div',{class:'file-drop', onclick:()=>fFile.click()},'Scegli un file CSV esportato dalla banca (o trascinalo qui)');
@@ -1551,9 +1611,12 @@ function importWizardCard(){
     stage.append(
       h('div',{class:'section-title', style:'margin-top:14px'},'Abbina le colonne'),
       h('div',{class:'map-grid'}, mapSel.flat()),
+      fType.value==='prezzi' ? h('div',{style:'max-width:220px;margin-top:10px'},
+        fld('Data delle quotazioni', fDataP, 'il prezzo può mancare: basta controvalore + quantità')) : null,
       h('div',{class:'section-title'},'Anteprima ('+(rows.length-1)+' righe)'),
       miniTable(head, prev.map(r=>head.map((_,i)=>r[i]||'')),[]),
-      h('div',{style:'margin-top:12px'}, h('button',{class:'btn primary', onclick:()=>doImport(rows, maps)},'Importa '+(rows.length-1)+' righe')));
+      h('div',{style:'margin-top:12px'}, h('button',{class:'btn primary', onclick:()=>doImport(rows, maps)},
+        (fType.value==='prezzi'?'Aggiorna prezzi da ':'Importa ')+(rows.length-1)+' righe')));
   }
   function val(r, maps, key){ const i = +maps[key].value; return i>=0 ? (r[i]||'').trim() : ''; }
   function doImport(rows, maps){
@@ -1576,6 +1639,17 @@ function importWizardCard(){
           if(qta && pmc!=null){
             state.txs.push({id:uid(), seq:state.txs.length, assetId:a.id, data:todayISO(), tipo:'buy', qta, prezzo:pmc, comm:0, note:'Import CSV — posizione'});
           }
+        } else if(type==='prezzi'){
+          const a = findAsset(val(r,maps,'titolo')); if(!a) throw 'titolo non trovato: '+(val(r,maps,'titolo')||'(vuoto)');
+          if(a.settore==='Liquidità' && a.prezzo===1) throw 'liquidità (aggiorna il saldo dal movimento): '+a.nome;
+          let px = parseNum(val(r,maps,'prezzo'));
+          if(px==null){
+            const ctv = parseNum(val(r,maps,'ctv')), q = parseNum(val(r,maps,'qta'));
+            if(ctv!=null && q) px = ctv/q*(isBond(a)?100:1);
+          }
+          if(px==null || px<=0) throw 'prezzo non ricavabile per '+a.nome;
+          a.prezzo = Math.round(px*1e8)/1e8;
+          a.prezzoData = fDataP.value || todayISO();
         } else if(type==='movimenti'){
           const a = findAsset(val(r,maps,'titolo')); if(!a) throw 'titolo non trovato: '+val(r,maps,'titolo');
           const data = parseDateAny(val(r,maps,'data')); if(!data) throw 'data non valida';
