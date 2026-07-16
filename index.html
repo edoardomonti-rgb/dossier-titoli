@@ -91,8 +91,8 @@ a{color:var(--accent)}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:14px}
 .kpi{background:var(--surface);border:1px solid var(--border);border-radius:13px;padding:14px 16px}
 .kpi .label{font-size:12px;color:var(--ink2)}
-.kpi .value{font-size:25px;font-weight:650;letter-spacing:-.015em;margin-top:2px;white-space:nowrap}
-.kpi .value.hero{font-size:38px}
+.kpi .value{font-size:24px;font-weight:650;letter-spacing:-.015em;margin-top:2px;white-space:nowrap}
+.kpi .value.hero{font-size:30px}
 .kpi .delta{font-size:12.5px;font-weight:600;margin-top:2px}
 .kpi .note{font-size:11.5px;color:var(--muted);margin-top:2px}
 .pos{color:var(--up)} .neg{color:var(--down)} .flat{color:var(--muted)}
@@ -785,6 +785,7 @@ function lineChart(seriesList, {height=250, zero=false}={}){
     const allY = seriesList.flatMap(s=>s.points.map(p=>p.y));
     let ymin = Math.min(...allY), ymax = Math.max(...allY);
     if(zero) ymin = Math.min(0,ymin);
+    if(ymax-ymin < Math.abs(ymax)*0.01){ const c=(ymax+ymin)/2; ymin=c*0.985; ymax=c*1.015; }  // serie piatta: apri la scala
     const pad=(ymax-ymin)*0.06||1; ymin-=pad; ymax+=pad;
     const sc = niceTicks(ymin,ymax,4);
     const X = t => padL + (t-xmin)/(xmax-xmin||1)*(W-padL-padR);
@@ -986,7 +987,7 @@ function renderDash(view){
   view.append(grid);
   const grid2 = h('div',{class:'grid cols-2 mt'});
   // Allocazione per dimensione
-  const dims = [['settore','Settore'],['area','Area geografica'],['valuta','Valuta']];
+  const dims = [['settore','Settore'],['area','Area geografica'],['banca','Banca'],['valuta','Valuta']];
   const rows = allocByDim(ui.allocDim);
   grid2.append(chartCard('allocdim', {
     title:'Diversificazione', sub:'per '+dims.find(d=>d[0]===ui.allocDim)[1].toLowerCase(),
@@ -1052,6 +1053,7 @@ function openAssetForm(asset){
   const fVal = sel(CCYS.map(c=>[c,c]), a.valuta);
   const fSett = inp({value:a.settore, placeholder:'es. Banche, Tecnologia…'});
   const fArea = inp({value:a.area, placeholder:'es. Italia, USA, Globale…'});
+  const fBanca = inp({value:a.banca, placeholder:'es. Sella, UBS…'});
   const fPrezzo = inp({value:a.prezzo??'', num:true}), fPrezzoData = inp({value:a.prezzoData, type:'date'});
   const fCed = inp({value:a.cedola??'', num:true}), fScad = inp({value:a.scadenza??'', type:'date'});
   const fWl = h('input',{type:'checkbox'}); fWl.checked = !!a.wl;
@@ -1077,7 +1079,7 @@ function openAssetForm(asset){
     h('div',{class:'full'}, fld('Nome del titolo *', fNome)),
     fld('ISIN', fIsin), fld('Tipo', fTipo),
     fld('Valuta', fVal), fld('Settore / categoria', fSett),
-    fld('Area geografica', fArea),
+    fld('Area geografica', fArea), fld('Banca / dossier', fBanca),
     fld('Regime fiscale plusvalenze', fFisc),
     bondBox, wlRow,
     h('label',{class:'fld'}, prezzoLab, fPrezzo), fld('Data prezzo', fPrezzoData),
@@ -1096,7 +1098,7 @@ function openAssetForm(asset){
       if(!fNome.value.trim()){ fNome.focus(); return false; }
       const obj = {
         id: a.id||uid(), nome:fNome.value.trim(), isin:fIsin.value.trim().toUpperCase(), ticker:a.ticker||'',
-        tipo:fTipo.value, valuta:fVal.value, settore:fSett.value.trim(), area:fArea.value.trim(),
+        tipo:fTipo.value, valuta:fVal.value, settore:fSett.value.trim(), area:fArea.value.trim(), banca:fBanca.value.trim(),
         wl:fWl.checked, fiscale:fFisc.value, cedola:readNum(fCed), scadenza:fScad.value||null,
         prezzo:readNum(fPrezzo)||0, prezzoData:fPrezzoData.value||todayISO(), note:fNote.value.trim(),
       };
@@ -1245,7 +1247,7 @@ function renderPos(view){
     return h('tr',{style:p.aperta?'':'opacity:.55'},
       h('td',{}, h('div',{class:'main'}, a.nome, a.wl?h('span',{class:'wl-badge',title:'White list — 12,5%'},'12,5%'):null),
         h('div',{class:'sm'}, h('span',{class:'chip'},h('span',{class:'dot',style:'background:'+tipoColor(a.tipo)}), TIPI[a.tipo]?.label||a.tipo),
-          a.isin?h('span',{},' '+a.isin):null, a.valuta!=='EUR'?' · '+a.valuta:'',
+          a.banca?' '+a.banca:'', a.isin?h('span',{class:'hide-sm'},' '+a.isin):null, a.valuta!=='EUR'?' · '+a.valuta:'',
           isBond(a)&&a.scadenza?' · scad. '+fmtDate(a.scadenza):'')),
       h('td',{class:'num hide-sm'}, p.aperta||p.qty>0 ? fmtQty(p.qty) : '—'),
       h('td',{class:'num hide-sm'}, p.qty>0 ? fmtNum(p.pmc, isBond(a)?3:4) : '—'),
@@ -1485,6 +1487,7 @@ const IMP_FIELDS = {
     ['valuta','Valuta', /valuta|divisa|currency/i],
     ['settore','Settore', /settore|sector|comparto/i],
     ['area','Area geografica', /area|paese|geograf|country|region/i],
+    ['banca','Banca / dossier', /banca|bank|istituto|dossier|deposito/i],
   ],
   movimenti: [
     ['titolo','Titolo (nome o ISIN) *', /nome|descri|titolo|isin|strumento/i],
@@ -1566,7 +1569,7 @@ function importWizardCard(){
           if(!a){
             a = {id:uid(), nome, isin, ticker:'', tipo:guessTipo(val(r,maps,'tipo')||nome), wl:false, fiscale:'auto',
               valuta:(val(r,maps,'valuta')||'EUR').toUpperCase().slice(0,3)||'EUR', settore:val(r,maps,'settore'), area:val(r,maps,'area'),
-              cedola:null, scadenza:null, prezzo:prezzo??pmc??0, prezzoData:todayISO(), note:''};
+              banca:val(r,maps,'banca'), cedola:null, scadenza:null, prezzo:prezzo??pmc??0, prezzoData:todayISO(), note:''};
             if(!CCYS.includes(a.valuta)) a.valuta='EUR';
             state.assets.push(a); created.push(a.nome);
           } else if(prezzo!=null){ a.prezzo=prezzo; a.prezzoData=todayISO(); }
