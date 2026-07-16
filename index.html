@@ -1541,6 +1541,7 @@ const IMP_FIELDS = {
     ['settore','Settore', /settore|sector|comparto/i],
     ['area','Area geografica', /area|paese|geograf|country|region/i],
     ['banca','Banca / dossier', /banca|bank|istituto|dossier|deposito/i],
+    ['ticker','Ticker Yahoo', /ticker|simbolo|symbol|yahoo/i],
   ],
   movimenti: [
     ['titolo','Titolo (nome o ISIN) *', /nome|descri|titolo|isin|strumento/i],
@@ -1625,17 +1626,26 @@ function importWizardCard(){
     for(const r of body){
       try{
         if(type==='posizioni'){
-          const nome = val(r,maps,'nome'); if(!nome) throw 'nome mancante';
+          const nome = val(r,maps,'nome');
           const isin = val(r,maps,'isin').toUpperCase();
           let a = findAsset(isin) || findAsset(nome);
+          if(!a && !nome) throw 'titolo non trovato e nome mancante';
           const qta = parseNum(val(r,maps,'qta')), pmc = parseNum(val(r,maps,'pmc')), prezzo = parseNum(val(r,maps,'prezzo'));
+          const tickerCsv = (val(r,maps,'ticker')||'').trim().toUpperCase();
           if(!a){
-            a = {id:uid(), nome, isin, ticker:'', tipo:guessTipo(val(r,maps,'tipo')||nome), wl:false, fiscale:'auto',
+            a = {id:uid(), nome, isin, ticker:tickerCsv, tipo:guessTipo(val(r,maps,'tipo')||nome), wl:false, fiscale:'auto',
               valuta:(val(r,maps,'valuta')||'EUR').toUpperCase().slice(0,3)||'EUR', settore:val(r,maps,'settore'), area:val(r,maps,'area'),
               banca:val(r,maps,'banca'), cedola:null, scadenza:null, prezzo:prezzo??pmc??0, prezzoData:todayISO(), note:''};
             if(!CCYS.includes(a.valuta)) a.valuta='EUR';
             state.assets.push(a); created.push(a.nome);
-          } else if(prezzo!=null){ a.prezzo=prezzo; a.prezzoData=todayISO(); }
+          } else {
+            // stesso ISIN su più dossier: aggiorna tutte le posizioni corrispondenti
+            const targets = a.isin ? state.assets.filter(x=>x.isin && x.isin===a.isin) : [a];
+            for(const t of targets){
+              if(prezzo!=null){ t.prezzo=prezzo; t.prezzoData=todayISO(); }
+              if(tickerCsv) t.ticker = tickerCsv;
+            }
+          }
           if(qta && pmc!=null){
             state.txs.push({id:uid(), seq:state.txs.length, assetId:a.id, data:todayISO(), tipo:'buy', qta, prezzo:pmc, comm:0, note:'Import CSV — posizione'});
           }
@@ -1648,8 +1658,12 @@ function importWizardCard(){
             if(ctv!=null && q) px = ctv/q*(isBond(a)?100:1);
           }
           if(px==null || px<=0) throw 'prezzo non ricavabile per '+a.nome;
-          a.prezzo = Math.round(px*1e8)/1e8;
-          a.prezzoData = fDataP.value || todayISO();
+          // stesso ISIN su più dossier: stesso prezzo unitario per tutti
+          const targets = a.isin ? state.assets.filter(x=>x.isin && x.isin===a.isin) : [a];
+          for(const t of targets){
+            t.prezzo = Math.round(px*1e8)/1e8;
+            t.prezzoData = fDataP.value || todayISO();
+          }
         } else if(type==='movimenti'){
           const a = findAsset(val(r,maps,'titolo')); if(!a) throw 'titolo non trovato: '+val(r,maps,'titolo');
           const data = parseDateAny(val(r,maps,'data')); if(!data) throw 'data non valida';
