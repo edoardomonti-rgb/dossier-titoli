@@ -409,7 +409,7 @@ const qtyLabel = a => isBond(a) ? 'Nominale' : 'Quantità';
 const KEY='dossier-titoli-v1';
 const DEFAULTS = () => ({
   version:1,
-  settings:{ theme:'auto', fx:{USD:0.85, GBP:1.17, CHF:1.07} },
+  settings:{ theme:'auto', fx:{USD:0.85, GBP:1.17, CHF:1.07}, autoQuotes:true, lastAutoQuote:null },
   assets:[], txs:[], income:[], minus:[], snapshots:[],
 });
 let state = DEFAULTS();
@@ -1218,6 +1218,43 @@ function makeQuoteFetcher(){
     return targetCcy==='EUR' ? pxEur : pxEur*await eurRate(targetCcy);
   };
 }
+/* Aggiornamento in background: all'apertura (una volta al giorno) o su richiesta */
+let _bgQuotesRunning = false;
+async function backgroundQuotes(){
+  if(_bgQuotesRunning) return;
+  const targets = (BOOK ? BOOK.aperte : []).filter(p=>p.asset.ticker);
+  if(!targets.length){ toast('Nessun titolo ha un ticker Yahoo'); return; }
+  _bgQuotesRunning = true;
+  state.settings.lastAutoQuote = todayISO(); persist();
+  const badge = $('#saveBadge');
+  const fetchInCcy = makeQuoteFetcher();
+  let ok = 0;
+  for(let i=0;i<targets.length;i++){
+    const p = targets[i];
+    if(badge) badge.textContent = `· scarico quotazioni ${i+1}/${targets.length}…`;
+    try{
+      const px = await fetchInCcy(p.asset.ticker, p.asset.valuta||'EUR');
+      p.asset.prezzo = Math.round(px*1e8)/1e8;
+      p.asset.prezzoData = todayISO();
+      ok++;
+    }catch(e){ /* titolo non quotato o rete assente: resta il prezzo precedente */ }
+    await new Promise(s=>setTimeout(s, 160));
+  }
+  _bgQuotesRunning = false;
+  updateSaveBadge();
+  if(ok){
+    BOOK = buildBook(); upsertSnapshot(BOOK); persist();
+    if(!$('#modalRoot').children.length) render();   // non interrompere l'utente se ha un modale aperto
+  }
+  toast(ok ? `Quotazioni aggiornate: ${ok} su ${targets.length}` : 'Quotazioni non disponibili (rete assente?)');
+}
+function maybeAutoQuotes(){
+  if(state.settings.autoQuotes === false) return;
+  if(state.settings.lastAutoQuote === todayISO()) return;
+  if(!state.assets.some(a=>a.ticker)) return;
+  setTimeout(backgroundQuotes, 700);
+}
+
 function openPriceForm(){
   const open = BOOK.aperte;
   if(!open.length){ toast('Nessuna posizione aperta'); return; }
@@ -1753,6 +1790,18 @@ function renderDati(view){
         download('dossier-posizioni-'+todayISO()+'.csv', '﻿'+lines.join('\r\n'), 'text/csv');
       }},'Esporta posizioni (CSV)')),
     h('div',{class:'disc mt'},'Il backup contiene tutti i dati: titoli, movimenti, proventi, zainetto e storico. Conservane una copia periodica.')));
+  // Quotazioni automatiche
+  const chkAQ = h('input',{type:'checkbox'});
+  chkAQ.checked = state.settings.autoQuotes !== false;
+  chkAQ.addEventListener('change', ()=>{ state.settings.autoQuotes = chkAQ.checked; persist(); toast(chkAQ.checked?'Aggiornamento automatico attivo':'Aggiornamento automatico disattivato'); });
+  const nTick = state.assets.filter(a=>a.ticker).length;
+  grid.append(h('div',{class:'card'},
+    h('h3',{},'Quotazioni automatiche'),
+    h('div',{class:'sub'}, nTick+' titoli con ticker Yahoo · ultimo aggiornamento: '+(state.settings.lastAutoQuote?fmtDate(state.settings.lastAutoQuote):'mai')),
+    h('label',{class:'check'}, chkAQ, h('span',{},'Scarica le quotazioni all’apertura dell’app (una volta al giorno)')),
+    h('div',{style:'display:flex;gap:9px;flex-wrap:wrap'},
+      h('button',{class:'btn', onclick:()=>backgroundQuotes()},'Aggiorna adesso')),
+    h('div',{class:'disc mt'},'Copre i titoli con ticker (azioni ed ETF). Obbligazioni, certificati e fondi non quotati si aggiornano con l’import "Solo aggiornamento prezzi" dal file della banca o di FIDA.')));
   // Cambi
   const fxIn = {};
   grid.append(h('div',{class:'card'},
@@ -1807,6 +1856,7 @@ $('#btnTheme').addEventListener('click', ()=>{
 });
 $('#btnPrezzi').addEventListener('click', ()=>{ BOOK = buildBook(); openPriceForm(); });
 render();
+maybeAutoQuotes();
 </script>
 </body>
 </html>
